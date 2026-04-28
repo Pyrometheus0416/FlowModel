@@ -1,0 +1,5 @@
+*.pdf
+*.pth
+samples/
+__pycache__
+theory pdf/
