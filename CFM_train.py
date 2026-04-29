@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import mean, pstdev
 #--------------------------------------------------------------------
 import torch
 import torch.nn as nn
@@ -28,7 +27,7 @@ DEVICE = torch.device('cpu') # 'cuda:0'
 torch.set_default_dtype(torch.float32)
 
 #--------------------------------------------------------------------
-CONTINUE = False # 是否从上次中断的地方继续训练
+CONTINUE = False
 
 EPOCH = 16
 BATCH_SIZE = 8
@@ -44,36 +43,32 @@ SAVE_IMG_PATH = Path(__file__).parent / 'cnf_samples'
 assert IMG_FLODER.exists(), f"Image folder {IMG_FLODER} does not exist. Please check the path."
 if not SAVE_PTH_PATH.exists():
     CONTINUE = False  # No checkpoint to continue
-    print(f"Warning: Checkpoint {SAVE_PTH_PATH} already exists. "
-          "It will be overwritten since CONTINUE is set to False.")
+    print(f"Warning: Checkpoint {SAVE_PTH_PATH} don't exists.")
 if not SAVE_IMG_PATH.exists():
     SAVE_IMG_PATH.mkdir(parents=True, exist_ok=True)
 
 #--------------------------------------------------------------------
-
 face_dataset = AnimeFaceDataset(IMG_FLODER)
-# mini_face_dataset = Subset(face_dataset, list(range(128)))
-print("▤The dataset capability is",len(face_dataset))
+# face_dataset = Subset(face_dataset, list(range(128)))
+print("▤ The dataset capability is",len(face_dataset))
+curr_epoch = 0  # init epoch as default
 
-cnf_fid = FID(feature=64, reset_real_features=False)
+cnf_fid = FID(reset_real_features=False)
 
-if not CONTINUE:
-    # init the fid with real dataset
-    face_dataset.transform = fid_transform = transforms.Compose([
-        transforms.Resize(face_dataset.size),
-        transforms.Normalize(face_dataset.mean, face_dataset.std)
-    ])  # temporary transform for FID evaluation (without data augmentation)
-    fid_dataloader = DataLoader(
-        face_dataset,
-        shuffle=True,
-        batch_size=BATCH_SIZE,
-        drop_last=True,
-        generator=torch.Generator(device=DEVICE) # [IMPORTANT!!!]
-    )
-    cnf_fid.reset()
-    for img in tqdm(fid_dataloader, "Evaluating FID of real data"):
-        cnf_fid.update(img, real=True)
-    face_dataset.reset()
+# init the fid with real dataset
+face_dataset.transform = fid_transform = transforms.Resize(face_dataset.size)
+# temporary transform for FID evaluation (without data augmentation)
+fid_dataloader = DataLoader(
+    face_dataset,
+    shuffle=True,
+    batch_size=BATCH_SIZE,
+    drop_last=True,
+    generator=torch.Generator(device=DEVICE) # [IMPORTANT!!!]
+)
+cnf_fid.reset()
+for img in tqdm(fid_dataloader, "Evaluating FID of real data"):
+    cnf_fid.update(img, real=True)
+face_dataset.reset()
 
 #--------------------------------------------------------------------
 
@@ -95,20 +90,22 @@ if CONTINUE:
 
     print('Loading pre-trained model...')
     checkpoint: dict = torch.load(SAVE_PTH_PATH)
+    curr_epoch = checkpoint['epoch'] + 1
     cnf.load_state_dict(checkpoint['cnf'])
     cnf_optim.load_state_dict(checkpoint['cnf_optim'])
     cnf_fid.load_state_dict(checkpoint['cnf_fid'])
+    scaler.load_state_dict(checkpoint['scaler'])
     print('Start training from loaded model...')
 
 
-for epoch in range(EPOCH):
+for epoch in range(curr_epoch, curr_epoch+EPOCH):
 
     cnf.train()
     for x1 in tqdm(dataloader, "Train"):
         x1: Tensor = x1.to(DEVICE)
         
         t = torch.rand(x1.shape[0], device=DEVICE)
-        x0 = torch.randn_like(x1)  
+        x0 = torch.randn_like(x1)  # standard Gaussian noise as x0
 
         x_t = torch.lerp(x0, x1, t.view(-1, 1, 1, 1))  # path interpolation
         v_target = x1 - x0
@@ -126,19 +123,21 @@ for epoch in range(EPOCH):
         cnf_optim.zero_grad()
 
     cnf.eval()
+    test_img_path = SAVE_IMG_PATH / f'test_{epoch}.jpg'
     with torch.inference_mode():
         h = w = face_dataset.size
         x0_prod = cnf.sample((1,3,h,w), DEVICE)
-        image = AnimeFaceDataset.inv_trans(x0_prod[0])
+        image = face_dataset.inv_trans(x0_prod[0])
         # image = image.cpu() [IMPORTANT!!!]
 
-        write_jpeg(image, SAVE_IMG_PATH/'test.jpg')
+        write_jpeg(image, test_img_path)
 
         for batch in tqdm(range(len(face_dataset) // BATCH_SIZE), "Evaluating FID of generated data"):
             x0_prod = cnf.sample((BATCH_SIZE,3,h,w), DEVICE)
-            cnf_fid.update(x0_prod, real=False)
+            img_prod = face_dataset.inv_trans(x0_prod)
+            cnf_fid.update(img_prod, real=False)
         fid_score = cnf_fid.compute().item()
-        cnf_fid.reset()  # reset FID generator features for the next epoch
+        # cnf_fid.reset()  # reset FID generator features for the next epoch
 
     checkpoint = {
         'epoch': epoch,
@@ -146,6 +145,7 @@ for epoch in range(EPOCH):
         'cnf_optim': cnf_optim.state_dict(),
         'loss': loss,
         'cnf_fid': cnf_fid.state_dict(),
+        'scaler': scaler.state_dict(),
         # 'scheduler_state_dict': scheduler.state_dict(),
         # 'rng_state': torch.get_rng_state(),  # 可选但推荐
     }
@@ -160,5 +160,5 @@ for epoch in range(EPOCH):
     print(f"|Train Loss: {m:.4f} ± {s:.4f} (Best: {best:.4f}) | Valid Loss: ---")
     print(f"|BatchSize: {BATCH_SIZE} | LR: {LR} | Checkpoint: saved")
     print("───────────────────────────────────────────────────────────────────────")
-    print(f"Preview: {SAVE_IMG_PATH/'test.jpg'} | FID: {fid_score:.4f}")
+    print(f"Preview: {test_img_path} | FID: {fid_score:.4f}")
     print("═══════════════════════════════════════════════════════════════════════\n")

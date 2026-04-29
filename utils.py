@@ -1,10 +1,10 @@
 from dataclasses import dataclass
-from typing import Iterable, TypeAlias
+from typing import Iterable, TypeAlias, Callable
 from pathlib import Path
+import math
 
 from PIL import Image
 import numpy as np
-import torch
 from torch import Tensor
 from tqdm import tqdm
 
@@ -65,14 +65,20 @@ class WelfordStats:
 class EMA:
     t: int = 0
     decay: float = 0.999
-    value: float = 0.0
+    value: float = 50.0
     deviation: float = 0.0
     best: float = float('inf')
+    lerp: Callable[[float, float, float], float] = lambda a,b,w: a + (b-a)*w
 
-    def update(self, new_value: Tensor):
-        new_value = new_value.detach()  # Ensure the new value is detached from the computation graph
-        self.value = torch.lerp(self.value, new_value, 1 - self.decay)  # equivalent to the above line but more numerically stable
-        self.deviation = (self.value - new_value)**2  # MSE error
+    def update(self, new_value: float):
+        assert not math.isnan(new_value), "EMA WARNNING: Get a NAN value!"
+        
+        if self.t == 0:
+            self.value = new_value
+        else:
+            self.value = self.lerp(self.value, new_value, 1-self.decay)
+        # equivalent to the above line but more numerically stable
+        self.deviation = self.lerp(self.deviation, (self.value - new_value)**2, 1-self.decay)
         self.best = min(self.best, self.value)
         self.t += 1
 

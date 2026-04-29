@@ -11,8 +11,10 @@ import numpy as np
 #--------------------------------------------------------------------
 Tensor: TypeAlias = torch.Tensor
 Res_Ch = namedtuple('Res_Ch', ['i', 'm', 'o'])
+"""ResBlock_Channel: input, middle, output"""
+
 Layer_Ch = namedtuple('Layer_Ch', ['i', 'm', 'e', 'o'])
-"input, middle, enhance, output"
+"""Layer_Channel: input, middle, enhance, output"""
 
 Arch = tuple[Layer_Ch, ...]
 
@@ -34,7 +36,7 @@ def sinPosEmbed(time: Tensor, dim=TIME_DIM):
     cycle = 10000 ** lg_cycle                 # <half_dim>
     raw_embeddings = time.outer(cycle)        # <B, half_dim>
 
-    embeddings = torch.zeros((time.size(0), dim))             # <B, 2*half_dim>
+    embeddings = torch.zeros((time.size(0), dim)) # <B, 2*half_dim>
     embeddings[:, 0::2] = raw_embeddings.sin()   # slice assignment
     embeddings[:, 1::2] = raw_embeddings.cos()
 
@@ -181,7 +183,7 @@ class Unet(nn.Module):
         tail_layer.is_tail = True
 
         self.decoder = nn.ModuleList(UpLayer(io_ch, ted) for io_ch in self.decoder_arch)
-        head_layer: UpLayer = cast(UpLayer, self.decoder[0])
+        head_layer = cast(UpLayer, self.decoder[0])
         head_layer.is_head = True
         # The decoder has an architecture symmetric to that of the encoder.
 
@@ -205,6 +207,7 @@ class ConditionFlowMatching(nn.Module):
     def __init__(self, arch, dim, time_emb_dim):
         super().__init__()
         self.arch = arch
+        self.dim = dim
 
         self.T = TIMESTEP
         self.time_emb_dim = ted = time_emb_dim
@@ -229,8 +232,7 @@ class ConditionFlowMatching(nn.Module):
         """
         B = shape[0]
 
-        # Start from a standard normal distribution
-        x = torch.randn(shape, device=device)
+        x = torch.randn(shape, device=device)  # Start from a standard normal distribution
 
         # Time steps from T to 0 (reverse time for sampling)
         dt = 1.0 / self.T
