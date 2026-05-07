@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch import Tensor
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader
 from torch.amp import autocast, GradScaler
 
 import torchvision.transforms.v2 as transforms
@@ -37,8 +37,8 @@ BETAS = (0.9, 0.999)
 
 #--------------------------------------------------------------------
 IMG_FLODER = Path(r"E:\CodeHub\Mydata\AnimeFace") # [IMPORTANT!!!]
-SAVE_PTH_PATH  = Path(__file__).parent / 'cnf_model.pth'
-SAVE_IMG_PATH = Path(__file__).parent / 'cnf_samples'
+SAVE_PTH_PATH  = Path(__file__).parent / 'cfm_model.pth'
+SAVE_IMG_PATH = Path(__file__).parent / 'cfm_samples'
 
 assert IMG_FLODER.exists(), f"Image folder {IMG_FLODER} does not exist. Please check the path."
 if not SAVE_PTH_PATH.exists():
@@ -49,11 +49,10 @@ if not SAVE_IMG_PATH.exists():
 
 #--------------------------------------------------------------------
 face_dataset = AnimeFaceDataset(IMG_FLODER)
-# face_dataset = Subset(face_dataset, list(range(128)))
 print("▤ The dataset capability is",len(face_dataset))
 curr_epoch = 0  # init epoch as default
 
-cnf_fid = FID(reset_real_features=False)
+cfm_fid = FID(reset_real_features=False)
 
 # init the fid with real dataset
 face_dataset.transform = fid_transform = transforms.Resize(face_dataset.size)
@@ -65,15 +64,15 @@ fid_dataloader = DataLoader(
     drop_last=True,
     generator=torch.Generator(device=DEVICE) # [IMPORTANT!!!]
 )
-cnf_fid.reset()
+cfm_fid.reset()
 for img in tqdm(fid_dataloader, "Evaluating FID of real data"):
-    cnf_fid.update(img, real=True)
+    cfm_fid.update(img, real=True)
 face_dataset.reset()
 
 #--------------------------------------------------------------------
 
-cnf = ConditionFlowMatching(ARCH, TIME_DIM, TIMESTEP)
-cnf_optim = optim.Adam(cnf.parameters(), lr=LR, betas=BETAS)
+cfm = ConditionFlowMatching(ARCH, TIME_DIM, TIMESTEP)
+cfm_optim = optim.Adam(cfm.parameters(), lr=LR, betas=BETAS)
 scaler = GradScaler(DEVICE)
 loss_logger = EMA()
 
@@ -91,16 +90,16 @@ if CONTINUE:
     print('Loading pre-trained model...')
     checkpoint: dict = torch.load(SAVE_PTH_PATH)
     curr_epoch = checkpoint['epoch'] + 1
-    cnf.load_state_dict(checkpoint['cnf'])
-    cnf_optim.load_state_dict(checkpoint['cnf_optim'])
-    cnf_fid.load_state_dict(checkpoint['cnf_fid'])
+    cfm.load_state_dict(checkpoint['cfm'])
+    cfm_optim.load_state_dict(checkpoint['cfm_optim'])
+    cfm_fid.load_state_dict(checkpoint['cfm_fid'])
     scaler.load_state_dict(checkpoint['scaler'])
     print('Start training from loaded model...')
 
 
 for epoch in range(curr_epoch, curr_epoch+EPOCH):
 
-    cnf.train()
+    cfm.train()
     for x1 in tqdm(dataloader, "Train"):
         x1: Tensor = x1.to(DEVICE)
         
@@ -112,39 +111,39 @@ for epoch in range(curr_epoch, curr_epoch+EPOCH):
 
         # Predict velocity
         with autocast(DEVICE, dtype= torch.float16):
-            v_pred = cnf.velocity_predicter(x_t, t)
+            v_pred = cfm.velocity_predicter(x_t, t)
             loss = nn.functional.mse_loss(v_pred, v_target)
         
         loss_logger.update(loss.item())
 
         scaler.scale(loss).backward()
-        scaler.step(cnf_optim)
+        scaler.step(cfm_optim)
         scaler.update()
-        cnf_optim.zero_grad()
+        cfm_optim.zero_grad()
 
-    cnf.eval()
+    cfm.eval()
     test_img_path = SAVE_IMG_PATH / f'test_{epoch}.jpg'
     with torch.inference_mode():
         h = w = face_dataset.size
-        x0_prod = cnf.sample((1,3,h,w), DEVICE)
+        x0_prod = cfm.sample((1,3,h,w), DEVICE)
         image = face_dataset.inv_trans(x0_prod[0])
         # image = image.cpu() [IMPORTANT!!!]
 
         write_jpeg(image, test_img_path)
 
         for batch in tqdm(range(len(face_dataset) // BATCH_SIZE), "Evaluating FID of generated data"):
-            x0_prod = cnf.sample((BATCH_SIZE,3,h,w), DEVICE)
+            x0_prod = cfm.sample((BATCH_SIZE,3,h,w), DEVICE)
             img_prod = face_dataset.inv_trans(x0_prod)
-            cnf_fid.update(img_prod, real=False)
-        fid_score = cnf_fid.compute().item()
-        # cnf_fid.reset()  # reset FID generator features for the next epoch
+            cfm_fid.update(img_prod, real=False)
+        fid_score = cfm_fid.compute().item()
+        # cfm_fid.reset()  # reset FID generator features for the next epoch
 
     checkpoint = {
         'epoch': epoch,
-        'cnf': cnf.state_dict(),
-        'cnf_optim': cnf_optim.state_dict(),
+        'cfm': cfm.state_dict(),
+        'cfm_optim': cfm_optim.state_dict(),
         'loss': loss,
-        'cnf_fid': cnf_fid.state_dict(),
+        'cfm_fid': cfm_fid.state_dict(),
         'scaler': scaler.state_dict(),
         # 'scheduler_state_dict': scheduler.state_dict(),
         # 'rng_state': torch.get_rng_state(),  # 可选但推荐

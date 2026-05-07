@@ -1,12 +1,12 @@
 from typing import cast, TypeAlias
 from collections import namedtuple, deque
 from functools import partial
+from math import log10
 
 import torch
 from torch import nn
 from torchvision.ops import MLP
 from tqdm import tqdm
-import numpy as np
 
 #--------------------------------------------------------------------
 Tensor: TypeAlias = torch.Tensor
@@ -30,9 +30,11 @@ TIME_DIM = 512
 TIMESTEP = 1000
 
 #--------------------------------------------------------------------
-def sinPosEmbed(time: Tensor, dim=TIME_DIM):
+def sinPosEmbed(time: Tensor, dim=TIME_DIM, timestep = TIMESTEP):
+    assert torch.all((time<=1.0)&(time>=0.0)), "Time should be in [0, 1]."
+
     half_dim = dim // 2                       # i in range(half_dim)
-    lg_cycle = -torch.arange(half_dim) / half_dim
+    lg_cycle = log10(timestep)/4.0 - torch.arange(half_dim) / half_dim
     cycle = 10000 ** lg_cycle                 # <half_dim>
     raw_embeddings = time.outer(cycle)        # <B, half_dim>
 
@@ -211,7 +213,7 @@ class ConditionFlowMatching(nn.Module):
 
         self.T = TIMESTEP
         self.time_emb_dim = ted = time_emb_dim
-        self.time_emb = partial(sinPosEmbed, dim=ted)
+        self.time_emb = partial(sinPosEmbed, dim=ted, timestep=TIMESTEP)
 
         # For flow matching, we define the velocity field directly
         self.velocity_field = Unet(arch, ted)
@@ -219,6 +221,7 @@ class ConditionFlowMatching(nn.Module):
 
     def velocity_predicter(self, x_t, t: Tensor):
         """Predict the velocity field v(x_t, t)"""
+
         t_emb = self.time_emb(t)
         t_emb = self.time_mlp(t_emb)
         v_pred = self.velocity_field(x_t, t_emb)
@@ -234,12 +237,12 @@ class ConditionFlowMatching(nn.Module):
 
         x = torch.randn(shape, device=device)  # Start from a standard normal distribution
 
-        # Time steps from T to 0 (reverse time for sampling)
+        # Time steps from 0 to 1 (reverse time for sampling)
         dt = 1.0 / self.T
         time_steps = torch.linspace(0.0, 1.0, self.T+1, device=device)[:-1]
 
         for t in tqdm(time_steps, "Sampling via Flow Matching"):
-            t_batch = torch.full((B,), int(t * self.T), device=device, dtype=torch.long)
+            t_batch = torch.full((B,), t, device=device)
             # Ensure t_batch values are within valid range
             t_batch = torch.clamp(t_batch, 0, self.T-1)
 

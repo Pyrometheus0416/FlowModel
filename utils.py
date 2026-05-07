@@ -8,6 +8,9 @@ import numpy as np
 from torch import Tensor
 from tqdm import tqdm
 
+from CFM_model import ConditionFlowMatching
+from CFM_model import ARCH, TIME_DIM, TIMESTEP
+
 #--------------------------------------------------------------------
 ImgLoader: TypeAlias = Iterable[Tensor]
 
@@ -65,10 +68,11 @@ class WelfordStats:
 class EMA:
     t: int = 0
     decay: float = 0.999
+    decay_: float = 0.6  # deviation decay
     value: float = 50.0
     deviation: float = 0.0
     best: float = float('inf')
-    lerp: Callable[[float, float, float], float] = lambda a,b,w: a + (b-a)*w
+    lerp: Callable[[float, float, float], float] = lambda a,b,w: a + w*(b-a)
 
     def update(self, new_value: float):
         assert not math.isnan(new_value), "EMA WARNNING: Get a NAN value!"
@@ -78,12 +82,12 @@ class EMA:
         else:
             self.value = self.lerp(self.value, new_value, 1-self.decay)
         # equivalent to the above line but more numerically stable
-        self.deviation = self.lerp(self.deviation, (self.value - new_value)**2, 1-self.decay)
+        self.deviation = self.lerp(self.deviation, (self.value - new_value)**2, 1-self.decay_)
         self.best = min(self.best, self.value)
         self.t += 1
 
     def reset(self):
-        self.value = 0.0
+        self.value = self.deviation = 0.0
 
 
 def compute_average_image(image_folder: Path):
@@ -111,11 +115,21 @@ def compute_average_image(image_folder: Path):
     return average_image
 
 
+def summary(model):
+    k = 0
+    for i in model.parameters():
+        k += i.numel()
+    print(f"The number of parameters: {k}.")
+    return k
+
+
 #--------------------------------------------------------------------
 if __name__ == "__main__":
     src = Path(r"E:\CodeHub\Mydata\AnimeFace")
+    net = ConditionFlowMatching(ARCH, TIME_DIM, TIMESTEP)
+    summary(net, (3,256,256))
 
 
-    avg_img = compute_average_image(src)
-    if avg_img:
-        avg_img.show()
+    # avg_img = compute_average_image(src)
+    # if avg_img:
+    #     avg_img.show()
