@@ -243,8 +243,6 @@ class ConditionFlowMatching(nn.Module):
 
         for t in tqdm(time_steps, "Sampling via Flow Matching"):
             t_batch = torch.full((B,), t, device=device)
-            # Ensure t_batch values are within valid range
-            t_batch = torch.clamp(t_batch, 0, self.T-1)
 
             # Predict velocity field
             v_pred = self.velocity_predicter(x, t_batch)
